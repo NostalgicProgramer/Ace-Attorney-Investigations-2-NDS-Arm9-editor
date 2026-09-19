@@ -7,10 +7,16 @@ extends Control
 @onready var editor_tablas = $Tablas
 @onready var visor_glifos = $Texturas
 
+@onready var BtnExtraerBin = $Tablas/BtnExtraerBin
+@onready var BtnInyectarBin = $Tablas/BtnInyectarBin
+
 var parser = DataParser.new()
 var archivo_actual_path: String = ""
 const CONFIG_PATH = "user://config.cfg"
 var dialog_cargar_img = FileDialog.new()
+var dialog_exportar_bin = FileDialog.new()
+var dialog_importar_bin = FileDialog.new()
+
 
 func _ready():
 	file_dialog.access = FileDialog.ACCESS_FILESYSTEM
@@ -35,6 +41,112 @@ func _ready():
 	if ruta_arm9 != "" and DirAccess.dir_exists_absolute(ruta_arm9):
 		file_dialog.current_dir = ruta_arm9
 		file_dialog.current_path = ruta_arm9 + "/"
+	
+	# Configurar FileDialog para EXTRAER .bin
+	dialog_exportar_bin.access = FileDialog.ACCESS_FILESYSTEM
+	dialog_exportar_bin.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	dialog_exportar_bin.filters = PackedStringArray(["*.bin ; Archivos Binarios (*.bin)"])
+	dialog_exportar_bin.file_selected.connect(_on_exportar_bin_seleccionado)
+	add_child(dialog_exportar_bin)
+	
+	# Configurar FileDialog para INYECTAR .bin
+	dialog_importar_bin.access = FileDialog.ACCESS_FILESYSTEM
+	dialog_importar_bin.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog_importar_bin.filters = PackedStringArray(["*.bin ; Archivos Binarios (*.bin)"])
+	dialog_importar_bin.file_selected.connect(_on_importar_bin_seleccionado)
+	add_child(dialog_importar_bin)
+
+	# Conectar botones de la interfaz (asegúrate de crearlos en el árbol de nodos si usas escenas)
+	BtnExtraerBin.pressed.connect(_on_btn_extraer_bin_pressed)
+	BtnInyectarBin.pressed.connect(_on_btn_inyectar_bin_pressed)
+
+# --- LÓGICA DE EXTRACCIÓN Y VOLCADO BINARIO ---
+
+func _on_btn_extraer_bin_pressed():
+	if archivo_actual_path == "":
+		print("Error: Primero debes abrir un archivo ARM9.")
+		return
+	if not item_list.is_anything_selected():
+		print("Error: Selecciona un bloque de la lista para extraer.")
+		return
+		
+	var nombre_bloque = item_list.get_item_text(item_list.get_selected_items()[0])
+	
+	var ultima_ruta = _cargar_ultima_ruta_arm9()
+	if ultima_ruta != "" and DirAccess.dir_exists_absolute(ultima_ruta):
+		dialog_exportar_bin.current_dir = ultima_ruta
+		dialog_exportar_bin.current_path = ultima_ruta + "/" + nombre_bloque + ".bin"
+	else:
+		dialog_exportar_bin.current_file = nombre_bloque + ".bin"
+		
+	dialog_exportar_bin.popup_centered()
+
+func _on_exportar_bin_seleccionado(path_destino: String):
+	if not item_list.is_anything_selected(): return
+	var nombre_bloque = item_list.get_item_text(item_list.get_selected_items()[0])
+	
+	# Leemos los bytes crudos directamente desde el ARM9 actual
+	var datos_raw = parser.cargar_bloque(archivo_actual_path, nombre_bloque)
+	
+	if datos_raw.is_empty():
+		print("Error: No se pudieron extraer datos del bloque %s." % nombre_bloque)
+		return
+		
+	var file = FileAccess.open(path_destino, FileAccess.WRITE)
+	if file:
+		file.store_buffer(datos_raw)
+		file.close()
+		_guardar_ultima_ruta_arm9(path_destino)
+		print("¡Bloque '%s' extraído exitosamente en: %s!" % [nombre_bloque, path_destino])
+	else:
+		print("Error al escribir el archivo .bin de destino.")
+
+# --- LÓGICA DE INYECCIÓN BINARIA ---
+
+func _on_btn_inyectar_bin_pressed():
+	if archivo_actual_path == "":
+		print("Error: Primero debes abrir un archivo ARM9.")
+		return
+	if not item_list.is_anything_selected():
+		print("Error: Selecciona el bloque de destino en la lista.")
+		return
+		
+	var ultima_ruta = _cargar_ultima_ruta_arm9()
+	if ultima_ruta != "" and DirAccess.dir_exists_absolute(ultima_ruta):
+		dialog_importar_bin.current_dir = ultima_ruta
+		
+	dialog_importar_bin.popup_centered()
+
+func _on_importar_bin_seleccionado(path_origen: String):
+	if not item_list.is_anything_selected(): return
+	var index_sel = item_list.get_selected_items()[0]
+	var nombre_bloque = item_list.get_item_text(index_sel)
+	var conf = parser.ARM9_LAYOUT[nombre_bloque]
+	
+	# 1. Leer el .bin externo
+	var file = FileAccess.open(path_origen, FileAccess.READ)
+	if not file:
+		print("Error: No se pudo abrir el archivo .bin seleccionado.")
+		return
+		
+	var bytes_importados = file.get_buffer(file.get_length())
+	file.close()
+	
+	# 2. Validación de tamaño estricta (Evita corromper el ARM9 si se selecciona un .bin equivocado)
+	if bytes_importados.size() != conf["size"]:
+		print("Error de Inyección: El archivo mide %d bytes, pero el bloque '%s' requiere exactamente %d bytes." % [
+			bytes_importados.size(), nombre_bloque, conf["size"]
+		])
+		return
+		
+	# 3. Inyectar datos directamente al offset exacto en el ARM9
+	var exito = parser.escribir_bloque(archivo_actual_path, nombre_bloque, bytes_importados)
+	if exito:
+		print("¡Inyección exitosa! Bloque '%s' actualizado en el ARM9." % nombre_bloque)
+		_guardar_ultima_ruta_arm9(path_origen)
+		
+		# 4. Recargar automáticamente la vista (renderizado de gráficos o lista de tablas)
+		_on_item_list_item_selected(index_sel)
 
 # --- RUTAS SEPARADAS EN CONFIG.CFG ---
 
@@ -66,7 +178,37 @@ func _cargar_ultima_ruta_textura() -> String:
 
 func _on_archivo_seleccionado(path: String):
 	_guardar_ultima_ruta_arm9(path)
-	archivo_actual_path = path
+	
+	# 1. Leer los bytes del archivo seleccionado
+	var file = FileAccess.open(path, FileAccess.READ)
+	if not file:
+		print("Error: No se pudo abrir el archivo ARM9 seleccionado.")
+		return
+		
+	var bytes_originales = file.get_buffer(file.get_length())
+	file.close()
+	
+	# 2. Verificar si requiere descompresión BLZ
+	if BLZ.esta_comprimido(bytes_originales):
+		print("Archivo comprimido detectado. Descomprimiendo ARM9 nativamente...")
+		var bytes_descomprimidos = BLZ.descomprimir(bytes_originales)
+		
+		# Crear la versión descomprimida de trabajo en el mismo directorio
+		var ruta_descomprimida = path.get_base_dir() + "/arm9_descomprimido.bin"
+		var file_out = FileAccess.open(ruta_descomprimida, FileAccess.WRITE)
+		if file_out:
+			file_out.store_buffer(bytes_descomprimidos)
+			file_out.close()
+			archivo_actual_path = ruta_descomprimida
+			print("¡ARM9 descomprimido con éxito! Archivo de trabajo: %s" % ruta_descomprimida)
+		else:
+			print("Error al escribir el archivo ARM9 descomprimido.")
+			return
+	else:
+		print("El archivo ARM9 ya está descomprimido. Cargando directamente...")
+		archivo_actual_path = path
+
+	# 3. Cargar la lista de fuentes y tablas
 	_cargar_lista_de_archivos()
 
 func _ready_extra_imagen():
@@ -156,13 +298,15 @@ func _on_guardar():
 		
 	print("Empaquetando imagen dinámica para %s..." % nombre_bloque)
 	
-	# Usamos la nueva función que acepta el nombre del bloque
+	# Empaquetamos los datos según el tipo de bloque (1bpp o 2bpp)
 	var datos_empaquetados = parser.empaquetar_fuente_desde_imagen(img, nombre_bloque)
 	
 	if datos_empaquetados.size() > 0:
+		# Escribimos directamente en las direcciones (offsets) del ARM9 descomprimido
 		var exito = parser.escribir_bloque(archivo_actual_path, nombre_bloque, datos_empaquetados)
 		if exito:
-			print("¡Inserción de %s completada con éxito!" % nombre_bloque)
+			print("¡Inserción de %s completada con éxito en el ARM9 descomprimido!" % nombre_bloque)
+
 
 func _cargar_lista_de_archivos():
 	item_list.clear()
