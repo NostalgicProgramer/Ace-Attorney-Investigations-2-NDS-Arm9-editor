@@ -29,7 +29,8 @@ func cargar_editor(ruta: String, nombre_tabla: String, nom_glyphs: String, textu
 	# Ordenar por el orden físico de la textura (glyph_index)
 	caracteres.sort_custom(func(a, b): return a.glyph_index < b.glyph_index)
 	
-	var conf = parser.ARM9_LAYOUT[nombre_glyphs_actual] if parser.ARM9_LAYOUT.has(nom_glyphs) else {}
+	# Usamos nombre_glyphs_actual en ambos lados
+	var conf = parser.ARM9_LAYOUT[nombre_glyphs_actual] if parser.ARM9_LAYOUT.has(nombre_glyphs_actual) else {}
 	var h_val = conf.get("h", 16)
 	
 	item_list.clear()

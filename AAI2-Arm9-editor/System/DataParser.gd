@@ -98,9 +98,8 @@ func empaquetar_fuente_desde_imagen(img: Image, nombre_bloque: String) -> Packed
 # --- NUEVA FUNCIÓN PARA EMPAQUETAR CORRECTAMENTE SEC_2BPP ---
 func _empaquetar_fuente_sec_2bpp(img: Image, conf: Dictionary) -> PackedByteArray:
 	var h_final = 14
-	var total_letras = conf["total"] # Ahora es 849
-	var bytes_per_glyph = conf["bytes_per_glyph"] # Ahora es 56
-	var bytes_per_block = 28 # Medio carácter
+	var total_letras = conf["total"] # 849
+	var bytes_per_glyph = conf["bytes_per_glyph"] # 56
 	var endian_mode = conf.get("endian", "little")
 	var cols = 64
 	
@@ -110,46 +109,34 @@ func _empaquetar_fuente_sec_2bpp(img: Image, conf: Dictionary) -> PackedByteArra
 	for char_idx in range(total_letras):
 		var grid_x = (char_idx % cols) * 16
 		var grid_y = floor(float(char_idx) / cols) * h_final
+		var dest_idx = char_idx * bytes_per_glyph
 		
-		# Cada letra se divide en 2 partes verticales (superior e inferior de 7 filas)
-		for parte in range(2):
-			var block_idx = (char_idx * 2) + parte
-			var byte_idx = block_idx * bytes_per_block
+		# Escribimos las 14 filas consecutivamente (4 bytes por fila)
+		for y in range(h_final):
+			var px_y_global = grid_y + y
+			var fila_u32 = 0
 			
-			var bloque_glifo_bytes = PackedByteArray()
-			bloque_glifo_bytes.resize(bytes_per_block)
+			for x in range(16):
+				var px_x = grid_x + x
+				if px_x < img.get_width() and px_y_global < img.get_height():
+					var col = img.get_pixel(px_x, px_y_global)
+					
+					var color_idx = 0
+					if col.r > 0.85: color_idx = 3       # Blanco
+					elif col.r > 0.5: color_idx = 2     # Gris medio
+					elif col.r > 0.2: color_idx = 1     # Gris oscuro
+					else: color_idx = 0                 # Transparente / Fondo
+					
+					fila_u32 |= (color_idx & 3) << ((15 - x) * 2)
 			
-			var offset_y_base = parte * 7
-			
-			for y in range(7):
-				var px_y_global = grid_y + offset_y_base + y
-				var fila_u32 = 0
-				
-				for x in range(16):
-					var px_x = grid_x + x
-					if px_x < img.get_width() and px_y_global < img.get_height():
-						var col = img.get_pixel(px_x, px_y_global)
-						
-						# Mapeamos los niveles de grises a los 4 índices de 2bpp (0 a 3)
-						var color_idx = 0
-						if col.r > 0.85: color_idx = 3       # Blanco
-						elif col.r > 0.5: color_idx = 2     # Gris medio
-						elif col.r > 0.2: color_idx = 1     # Gris oscuro
-						else: color_idx = 0                 # Transparente / Fondo
-						
-						fila_u32 |= (color_idx & 3) << ((15 - x) * 2)
-				
-				var offset_fila = y * 4
-				if endian_mode == "big":
-					bloque_glifo_bytes[offset_fila]     = (fila_u32 >> 24) & 0xFF
-					bloque_glifo_bytes[offset_fila + 1] = (fila_u32 >> 16) & 0xFF
-					bloque_glifo_bytes[offset_fila + 2] = (fila_u32 >> 8) & 0xFF
-					bloque_glifo_bytes[offset_fila + 3] = fila_u32 & 0xFF
-				else:
-					bloque_glifo_bytes.encode_u32(offset_fila, fila_u32)
-			
-			for b in range(bytes_per_block):
-				bloque_bytes[byte_idx + b] = bloque_glifo_bytes[b]
+			var offset_fila = dest_idx + (y * 4)
+			if endian_mode == "big":
+				bloque_bytes[offset_fila]     = (fila_u32 >> 24) & 0xFF
+				bloque_bytes[offset_fila + 1] = (fila_u32 >> 16) & 0xFF
+				bloque_bytes[offset_fila + 2] = (fila_u32 >> 8) & 0xFF
+				bloque_bytes[offset_fila + 3] = fila_u32 & 0xFF
+			else:
+				bloque_bytes.encode_u32(offset_fila, fila_u32)
 				
 	return bloque_bytes
 
@@ -180,7 +167,15 @@ func obtener_datos_tabla(path: String, nombre_tabla: String) -> Array:
 	return lista_caracteres
 
 func actualizar_ancho_glifo(path: String, tabla_nombre: String, indice: int, nuevo_ancho: int) -> bool:
+	if not ARM9_LAYOUT.has(tabla_nombre): return false
 	var conf_tabla = ARM9_LAYOUT[tabla_nombre]
+	
+	# Validación de límites para evitar corromper bloques contiguos
+	var max_entradas = conf_tabla["size"] / 8
+	if indice < 0 or indice >= max_entradas:
+		print("Error: El índice %d está fuera de rango (máximo %d)." % [indice, max_entradas])
+		return false
+
 	var file = FileAccess.open(path, FileAccess.READ_WRITE)
 	if not file: return false
 	
